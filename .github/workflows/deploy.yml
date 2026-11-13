@@ -2,7 +2,7 @@ name: Deploy Nightscout server
 
 on:
   push:
-    branches: [independent-dev]
+    branches: [main]
   workflow_dispatch:
     inputs:
       libre_sha:
@@ -25,7 +25,7 @@ jobs:
 
   build:
     needs: ci
-    if: github.repository == 'oklitovchenko/nightscout' && github.ref == 'refs/heads/independent-dev' && vars.NIGHTSCOUT_INSTANCE_ID != ''
+    if: github.repository == 'oklitovchenko/nightscout' && github.ref == 'refs/heads/main' && vars.NIGHTSCOUT_INSTANCE_ID != ''
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     permissions:
@@ -81,7 +81,7 @@ jobs:
     permissions:
       id-token: write
     environment: production
-    if: github.repository == 'oklitovchenko/nightscout' && github.ref == 'refs/heads/independent-dev'
+    if: github.repository == 'oklitovchenko/nightscout' && github.ref == 'refs/heads/main'
     steps:
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:

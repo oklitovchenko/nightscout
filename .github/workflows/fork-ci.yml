@@ -3,7 +3,7 @@ name: Nightscout development CI
 on:
   workflow_call:
   pull_request:
-    branches: [independent-dev]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
