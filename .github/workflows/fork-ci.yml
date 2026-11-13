@@ -1,8 +1,7 @@
 name: Nightscout development CI
 
 on:
-  push:
-    branches: [independent-dev]
+  workflow_call:
   pull_request:
     branches: [independent-dev]
   workflow_dispatch:
@@ -11,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: nightscout-ci-${{ github.ref }}
+  group: nightscout-ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

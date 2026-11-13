@@ -20,7 +20,11 @@ env:
   REGISTRY: 370690050634.dkr.ecr.eu-central-1.amazonaws.com
 
 jobs:
+  ci:
+    uses: ./.github/workflows/fork-ci.yml
+
   build:
+    needs: ci
     if: github.repository == 'oklitovchenko/nightscout' && github.ref == 'refs/heads/independent-dev' && vars.STAGING_INSTANCE_ID != ''
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
