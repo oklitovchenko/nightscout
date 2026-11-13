@@ -1,4 +1,4 @@
-name: Deploy Nightscout staging
+name: Deploy Nightscout server
 
 on:
   push:
@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: nightscout-staging-deploy
+  group: nightscout-server-deploy
 
 env:
   REGISTRY: 370690050634.dkr.ecr.eu-central-1.amazonaws.com
@@ -25,7 +25,7 @@ jobs:
 
   build:
     needs: ci
-    if: github.repository == 'oklitovchenko/nightscout' && github.ref == 'refs/heads/independent-dev' && vars.STAGING_INSTANCE_ID != ''
+    if: github.repository == 'oklitovchenko/nightscout' && github.ref == 'refs/heads/independent-dev' && vars.NIGHTSCOUT_INSTANCE_ID != ''
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     permissions:
@@ -56,7 +56,7 @@ jobs:
           docker build -f nightscout/.github/docker/librelinkup.Dockerfile -t librelinkup:staging librelinkup
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          role-to-assume: arn:aws:iam::370690050634:role/nightscout-staging-build
+          role-to-assume: arn:aws:iam::370690050634:role/nightscout-server-build
           aws-region: eu-central-1
           allowed-account-ids: '370690050634'
       - name: Publish immutable images
@@ -64,7 +64,7 @@ jobs:
         run: |
           aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
           for app in nightscout librelinkup; do
-            repo="$REGISTRY/nightscout-staging/$app"
+            repo="$REGISTRY/nightscout-server/$app"
             tag="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
             docker tag "$app:staging" "$repo:$tag"
             docker push "$repo:$tag"
@@ -80,29 +80,29 @@ jobs:
     timeout-minutes: 20
     permissions:
       id-token: write
-    environment: staging
+    environment: production
     if: github.repository == 'oklitovchenko/nightscout' && github.ref == 'refs/heads/independent-dev'
     steps:
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          role-to-assume: arn:aws:iam::370690050634:role/nightscout-staging-deploy
+          role-to-assume: arn:aws:iam::370690050634:role/nightscout-server-deploy
           aws-region: eu-central-1
           allowed-account-ids: '370690050634'
       - name: Store encrypted settings and deploy via SSM
         env:
-          SETTINGS: ${{ secrets.STAGING_RUNTIME_JSON }}
-          INSTANCE: ${{ vars.STAGING_INSTANCE_ID }}
+          SETTINGS: ${{ secrets.NIGHTSCOUT_RUNTIME_JSON }}
+          INSTANCE: ${{ vars.NIGHTSCOUT_INSTANCE_ID }}
           NIGHTSCOUT: ${{ needs.build.outputs.nightscout }}
           LIBRE: ${{ needs.build.outputs.libre }}
         run: |
           [[ "$INSTANCE" =~ ^i-[a-f0-9]{17}$ ]]
           jq -e 'type == "object" and (.API_SECRET | strings | length >= 12)' <<< "$SETTINGS" >/dev/null
-          version=$(printf '%s' "$SETTINGS" | aws ssm put-parameter --name /nightscout/staging/runtime \
+          version=$(printf '%s' "$SETTINGS" | aws ssm put-parameter --name /nightscout/production/runtime \
             --type SecureString --tier Standard --value file:///dev/stdin --overwrite --query Version --output text)
           unset SETTINGS
           parameters=$(jq -cn --arg nightscout "$NIGHTSCOUT" --arg libre "$LIBRE" --arg version "$version" \
             '{nightscout:[$nightscout],libre:[$libre],configVersion:[$version]}')
-          command=$(aws ssm send-command --document-name NightscoutStagingDeploy --instance-ids "$INSTANCE" \
+          command=$(aws ssm send-command --document-name NightscoutServerDeploy --instance-ids "$INSTANCE" \
             --parameters "$parameters" --query Command.CommandId --output text)
           for attempt in {1..85}; do
             status=$(aws ssm get-command-invocation --command-id "$command" --instance-id "$INSTANCE" \
