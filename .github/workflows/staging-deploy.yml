@@ -1,0 +1,111 @@
+name: Deploy Nightscout staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      libre_sha:
+        description: Commit SHA in the LibreLinkUp fork
+        default: bff2317f5cc0db4a1a40971bbf601c87ab0e856d
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightscout-staging-deploy
+
+env:
+  REGISTRY: 370690050634.dkr.ecr.eu-central-1.amazonaws.com
+
+jobs:
+  build:
+    if: github.repository == 'oklitovchenko/nightscout' && github.ref == 'refs/heads/independent-dev'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      nightscout: ${{ steps.images.outputs.nightscout }}
+      libre: ${{ steps.images.outputs.libre }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: nightscout
+          persist-credentials: false
+      - name: Validate source revisions
+        env:
+          LIBRE_SHA: ${{ inputs.libre_sha }}
+        run: |
+          [[ "$LIBRE_SHA" =~ ^[a-f0-9]{40}$ ]]
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: oklitovchenko/nightscout-librelink-up
+          ref: ${{ inputs.libre_sha }}
+          path: librelinkup
+          persist-credentials: false
+      - name: Build ARM64 images
+        run: |
+          docker build -t nightscout:staging nightscout
+          docker build -f nightscout/.github/docker/librelinkup.Dockerfile -t librelinkup:staging librelinkup
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::370690050634:role/nightscout-staging-build
+          aws-region: eu-central-1
+          allowed-account-ids: '370690050634'
+      - name: Publish immutable images
+        id: images
+        run: |
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
+          for app in nightscout librelinkup; do
+            repo="$REGISTRY/nightscout-staging/$app"
+            tag="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            docker tag "$app:staging" "$repo:$tag"
+            docker push "$repo:$tag"
+            digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$repo:$tag")
+            key=$app
+            if [[ $app == librelinkup ]]; then key=libre; fi
+            echo "$key=${digest##*@}" >> "$GITHUB_OUTPUT"
+          done
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      id-token: write
+    environment: staging
+    if: github.repository == 'oklitovchenko/nightscout' && github.ref == 'refs/heads/independent-dev'
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::370690050634:role/nightscout-staging-deploy
+          aws-region: eu-central-1
+          allowed-account-ids: '370690050634'
+      - name: Store encrypted settings and deploy via SSM
+        env:
+          SETTINGS: ${{ secrets.STAGING_RUNTIME_JSON }}
+          INSTANCE: ${{ vars.STAGING_INSTANCE_ID }}
+          NIGHTSCOUT: ${{ needs.build.outputs.nightscout }}
+          LIBRE: ${{ needs.build.outputs.libre }}
+        run: |
+          [[ "$INSTANCE" =~ ^i-[a-f0-9]{17}$ ]]
+          jq -e 'type == "object" and (.API_SECRET | strings | length >= 12)' <<< "$SETTINGS" >/dev/null
+          version=$(printf '%s' "$SETTINGS" | aws ssm put-parameter --name /nightscout/staging/runtime \
+            --type SecureString --tier Standard --value file:///dev/stdin --overwrite --query Version --output text)
+          unset SETTINGS
+          parameters=$(jq -cn --arg nightscout "$NIGHTSCOUT" --arg libre "$LIBRE" --arg version "$version" \
+            '{nightscout:[$nightscout],libre:[$libre],configVersion:[$version]}')
+          command=$(aws ssm send-command --document-name NightscoutStagingDeploy --instance-ids "$INSTANCE" \
+            --parameters "$parameters" --query Command.CommandId --output text)
+          for attempt in {1..85}; do
+            status=$(aws ssm get-command-invocation --command-id "$command" --instance-id "$INSTANCE" \
+              --query Status --output text 2>/dev/null) || status=Pending
+            case "$status" in
+              Success) echo "Staging deployment and authenticated API check passed"; exit 0 ;;
+              Pending|InProgress|Delayed) sleep 10 ;;
+              *) echo "SSM command $command ended with status $status"; exit 1 ;;
+            esac
+          done
+          echo "SSM command $command did not finish in time"
+          exit 1

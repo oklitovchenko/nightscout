@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   tests:
-    if: github.repository == 'oklitovchenko/cgm-remote-monitor'
+    if: github.repository == 'oklitovchenko/nightscout'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -39,7 +39,7 @@ jobs:
             bash -ec 'npm ci && npm run test:unit:ci && npm run test:core && npm run test:integration:ci'
 
   container:
-    if: github.repository == 'oklitovchenko/cgm-remote-monitor'
+    if: github.repository == 'oklitovchenko/nightscout'
     name: Build and smoke test (${{ matrix.arch }})
     strategy:
       fail-fast: false
