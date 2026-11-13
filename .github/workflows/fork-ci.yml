@@ -34,8 +34,13 @@ jobs:
           persist-credentials: false
       - name: Run server and client tests on Node.js 22
         run: |
-          docker run --rm --network host -v "$PWD:/app" -w /app node:22-bookworm \
-            bash -ec 'npm ci && npm run test:unit:ci && npm run test:core && npm run test:integration:ci'
+          docker run --rm -i --network host -v "$PWD:/app" -w /app node:22-bookworm bash -e <<'CI'
+          npm ci
+          npm run test:unit:ci -- --ignore ./tests/verifyauth.test.js
+          npx --no-install env-cmd -f ./tests/ci.test.env mocha --require ./tests/hooks.js --exit ./tests/verifyauth.test.js
+          npm run test:core
+          npm run test:integration:ci
+          CI
 
   container:
     if: github.repository == 'oklitovchenko/nightscout'
