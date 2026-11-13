@@ -1,6 +1,8 @@
 name: Deploy Nightscout staging
 
 on:
+  push:
+    branches: [independent-dev]
   workflow_dispatch:
     inputs:
       libre_sha:
@@ -19,7 +21,7 @@ env:
 
 jobs:
   build:
-    if: github.repository == 'oklitovchenko/nightscout' && github.ref == 'refs/heads/independent-dev'
+    if: github.repository == 'oklitovchenko/nightscout' && github.ref == 'refs/heads/independent-dev' && vars.STAGING_INSTANCE_ID != ''
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     permissions:
@@ -33,15 +35,15 @@ jobs:
         with:
           path: nightscout
           persist-credentials: false
-      - name: Validate source revisions
+      - name: Validate LibreLinkUp revision
         env:
-          LIBRE_SHA: ${{ inputs.libre_sha }}
+          LIBRE_SHA: ${{ inputs.libre_sha || 'bff2317f5cc0db4a1a40971bbf601c87ab0e856d' }}
         run: |
           [[ "$LIBRE_SHA" =~ ^[a-f0-9]{40}$ ]]
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: oklitovchenko/nightscout-librelink-up
-          ref: ${{ inputs.libre_sha }}
+          ref: ${{ inputs.libre_sha || 'bff2317f5cc0db4a1a40971bbf601c87ab0e856d' }}
           path: librelinkup
           persist-credentials: false
       - name: Build ARM64 images
