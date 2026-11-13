@@ -1,0 +1,83 @@
+name: Nightscout development CI
+
+on:
+  push:
+    branches: [independent-dev]
+  pull_request:
+    branches: [independent-dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightscout-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    if: github.repository == 'oklitovchenko/cgm-remote-monitor'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mongodb:
+        image: mongo:8.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ ping: 1 })'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Run server and client tests on Node.js 22
+        run: |
+          docker run --rm --network host -v "$PWD:/app" -w /app node:22-bookworm \
+            bash -ec 'npm ci && npm run test:unit:ci && npm run test:core && npm run test:integration:ci'
+
+  container:
+    if: github.repository == 'oklitovchenko/cgm-remote-monitor'
+    name: Build and smoke test (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Build production image
+        run: docker build --platform "linux/${{ matrix.arch }}" -t nightscout:ci .
+      - name: Verify the container and API authorization
+        run: |
+          docker network create nightscout-ci
+          trap 'docker rm -f nightscout-ci-app nightscout-ci-db >/dev/null 2>&1 || true; docker network rm nightscout-ci >/dev/null' EXIT
+          docker run -d --name nightscout-ci-db --network nightscout-ci mongo:8.0
+          api_secret=$(openssl rand -hex 16)
+          api_hash=$(printf '%s' "$api_secret" | sha1sum | cut -d ' ' -f 1)
+          docker run -d --name nightscout-ci-app --network nightscout-ci -p 127.0.0.1:1337:1337 \
+            -e MONGODB_URI=mongodb://nightscout-ci-db:27017/ci \
+            -e AUTH_DEFAULT_ROLES=denied -e INSECURE_USE_HTTP=true -e PORT=1337 \
+            -e API_SECRET="$api_secret" nightscout:ci
+          url='http://127.0.0.1:1337/api/v1/entries.json?count=1'
+          for attempt in {1..45}; do
+            anonymous=$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' "$url" || true)
+            authenticated=$(curl -s --max-time 3 -H "api-secret: $api_hash" -o /dev/null -w '%{http_code}' "$url" || true)
+            if [[ "$anonymous/$authenticated" == 401/200 ]]; then
+              echo 'Nightscout API ready: anonymous 401, authenticated 200'
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Unexpected API responses: $anonymous/$authenticated"
+          docker logs --tail 50 nightscout-ci-app
+          exit 1
