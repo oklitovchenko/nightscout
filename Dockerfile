@@ -37,6 +37,8 @@ COPY --chown=node:node translations/ ./translations/
 COPY --chown=node:node server.js ./
 COPY --chown=node:node --from=builder /opt/app/node_modules ./node_modules
 
+COPY deploy/ec2/ /opt/deploy/
+
 USER node
 EXPOSE 1337
 
