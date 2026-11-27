@@ -65,6 +65,9 @@ aws ssm get-parameter --region "$aws_region" \
   > "$release/settings.json"
 printf '%s\n' "$image" > "$release/image"
 mongo_image=$(jq -er '.MONGO_IMAGE' "$release/settings.json")
+jq -ce '.NIGHTSCOUT_ACCESS' "$release/settings.json" > "$release/access.json"
+jq -e -f "$bundle/validate-nightscout-access.jq" \
+  "$release/access.json" > /dev/null
 sh "$bundle/write-nightscout-environment.sh" \
   "$release" "$mongo_container" "$app_port"
 
@@ -88,6 +91,8 @@ docker start "$mongo_container" >/dev/null
 
 previous=$(readlink current || true)
 if start_nightscout "$release" && wait_for_nightscout "$release" &&
+  sh "$bundle/reconcile-nightscout-access.sh" \
+    "$release" "http://127.0.0.1:$app_port" &&
   ln -sfn "$release" current.new && mv -Tf current.new current; then
   keep_release=true
   sh "$bundle/configure-sensor-mirror.sh" "$state_directory" "$mongo_container"
