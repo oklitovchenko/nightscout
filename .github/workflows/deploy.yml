@@ -1,0 +1,115 @@
+name: Nightscout CI/CD
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy to production using a previously published image
+        type: boolean
+        default: false
+      image_tag:
+        description: ECR tag (leave empty to reuse the running image)
+        type: string
+  push:
+    branches: [my-main]
+  pull_request:
+    branches: [my-main]
+
+permissions:
+  contents: read
+
+env:
+  MONGO_IMAGE: ${{ vars.MONGO_IMAGE }}
+
+jobs:
+  tests:
+    if: github.event_name != 'workflow_dispatch' || !inputs.deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mongodb:
+        image: ${{ vars.MONGO_IMAGE }}
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ ping: 1 })'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Run server and client tests
+        env:
+          VERIFYAUTH_TIMEOUT_SECONDS: ${{ vars.VERIFYAUTH_TIMEOUT_SECONDS }}
+        run: sh .github/scripts/run-nightscout-tests.sh
+
+  build:
+    needs: tests
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Build and check the ARM64 image
+        run: sh .github/scripts/build-and-check-nightscout-image.sh
+      - name: Validate ECR publishing settings
+        if: github.ref == 'refs/heads/my-main'
+        id: ecr
+        env:
+          ROLE_ARN: ${{ vars.AWS_ECR_ROLE_ARN }}
+          REGION: ${{ vars.AWS_REGION }}
+          REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+        run: sh .github/scripts/validate-ecr-publishing-settings.sh
+      - uses: "aws-actions/configure-aws-credentials@\
+          e1253824e5c10ff9df46874f81ed3ec929e19cfd" # v6.3.0
+        if: github.ref == 'refs/heads/my-main'
+        with:
+          role-to-assume: ${{ vars.AWS_ECR_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ steps.ecr.outputs.account-id }}
+      - name: Publish the image and record its ECR digest
+        if: github.ref == 'refs/heads/my-main'
+        env:
+          AWS_ACCOUNT_ID: ${{ steps.ecr.outputs.account-id }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+        run: sh .github/scripts/publish-nightscout-image-to-ecr.sh
+
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.deploy
+      && github.ref == 'refs/heads/my-main'
+      && github.repository == 'oklitovchenko/nightscout'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: "aws-actions/configure-aws-credentials@\
+          e1253824e5c10ff9df46874f81ed3ec929e19cfd" # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+      - name: Deploy Nightscout
+        env:
+          RUNTIME_CONFIG: ${{ vars.NIGHTSCOUT_RUNTIME_OPTIONS_JSON }}
+          RUNTIME_SECRET: ${{ secrets.NIGHTSCOUT_RUNTIME_JSON }}
+          ACCESS_CONFIG: ${{ vars.NIGHTSCOUT_ACCESS_OPTIONS_JSON }}
+          TARGET_INSTANCE: ${{ vars.NIGHTSCOUT_INSTANCE_ID }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+        run: sh .github/scripts/deploy-production.sh
