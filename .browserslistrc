@@ -2,6 +2,7 @@
 # See https://github.com/browserslist/browserslist for details
 
 > 0.25%
+Firefox 68
 ios_saf 9.3
 ios_saf 10.3
 ios_saf 13.7
